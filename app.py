@@ -1,79 +1,97 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+from datetime import datetime
 
-# Configuração da página - DEVE ser o primeiro comando Streamlit
-st.set_page_config(page_title="Sistema de Gestão 1.0", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Sistema de Gestão", layout="wide", page_icon="💰")
 
-# Conexão com o Google Sheets
+# Conexão
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO PARA CARREGAR DADOS ---
-def carregar_dados():
+# Função para carregar dados (com cache para ser rápido)
+def load_data():
     prod = conn.read(worksheet="produtos")
-    # Tenta ler vendas e clientes, se não existirem, cria um DataFrame vazio
+    cli = conn.read(worksheet="clientes")
     try:
         vend = conn.read(worksheet="vendas")
     except:
         vend = pd.DataFrame(columns=["Data", "Cliente", "Produto", "Valor", "Quantidade"])
-    return prod, vend
+    return prod, cli, vend
 
-df_produtos, df_vendas = carregar_dados()
+df_produtos, df_clientes, df_vendas = load_data()
 
-# --- BARRA LATERAL (MENU) ---
-st.sidebar.title("🎮 Navegação")
-menu = st.sidebar.radio("Ir para:", ["🏠 Home", "📦 Estoque", "👥 Clientes", "💰 PDV / Vendas"])
+# Menu Lateral
+menu = st.sidebar.radio("Navegação", ["🏠 Home", "📦 Produtos", "👥 Clientes", "🛒 Nova Venda"])
 
-# --- PÁGINA INICIAL (HOME) ---
+# --- PÁGINA: HOME ---
 if menu == "🏠 Home":
-    st.title("📊 Painel de Controle")
-    st.markdown(f"Bem-vindo ao seu sistema de gestão, **{st.experimental_user.name if 'name' in st.experimental_user else 'Usuário'}**!")
-    
-    st.divider()
+    st.title("Painel Geral")
+    col1, col2 = st.columns(2)
+    col1.metric("Total de Clientes", len(df_clientes))
+    col2.metric("Itens no Estoque", df_produtos["Estoque"].sum())
+    st.dataframe(df_produtos)
 
-    # --- MÉTRICAS PRINCIPAIS ---
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_estoque = df_produtos["Estoque"].sum()
-    valor_estoque = (df_produtos["Estoque"] * df_produtos["Preco"]).sum()
-    total_vendas_valor = df_vendas["Valor"].astype(float).sum() if not df_vendas.empty else 0.0
-    qtd_vendas = len(df_vendas)
+# --- PÁGINA: PRODUTOS ---
+elif menu == "📦 Produtos":
+    st.title("Cadastro de Produtos")
+    with st.form("cad_prod"):
+        nome = st.text_input("Nome do Produto")
+        preco = st.number_input("Preço", min_value=0.0)
+        qtd = st.number_input("Estoque Inicial", min_value=0)
+        if st.form_submit_button("Salvar Produto"):
+            novo_p = pd.DataFrame([{"ID": len(df_produtos)+1, "Nome": nome, "Preco": preco, "Estoque": qtd}])
+            updated_p = pd.concat([df_produtos, novo_p], ignore_index=True)
+            conn.update(worksheet="produtos", data=updated_p)
+            st.success("Produto salvo!")
+            st.rerun()
 
-    col1.metric("Itens em Estoque", f"{total_estoque} un")
-    col2.metric("Valor em Estoque", f"R$ {valor_estoque:,.2f}")
-    col3.metric("Vendas Totais (R$)", f"R$ {total_vendas_valor:,.2f}")
-    col4.metric("Nº de Vendas", f"{qtd_vendas}")
-
-    st.divider()
-
-    # --- ALERTAS E GRÁFICOS ---
-    c1, c2 = st.columns([1, 1])
-
-    with c1:
-        st.subheader("⚠️ Alerta de Estoque Baixo")
-        estoque_baixo = df_produtos[df_produtos["Estoque"] <= 5]
-        if not estoque_baixo.empty:
-            st.warning(f"Existem {len(estoque_baixo)} produtos com menos de 5 unidades!")
-            st.dataframe(estoque_baixo[["Nome", "Estoque"]], use_container_width=True)
-        else:
-            st.success("Tudo em dia! Nenhum produto com estoque crítico.")
-
-    with c2:
-        st.subheader("📈 Últimas Vendas")
-        if not df_vendas.empty:
-            st.table(df_vendas.tail(5)) # Mostra as últimas 5 vendas
-        else:
-            st.info("Nenhuma venda registrada ainda.")
-
-# --- OUTRAS PÁGINAS (ESTRUTURA) ---
-elif menu == "📦 Estoque":
-    st.title("📦 Gerenciamento de Estoque")
-    # Aqui você move aquele código de cadastro que fizemos antes...
-
+# --- PÁGINA: CLIENTES ---
 elif menu == "👥 Clientes":
-    st.title("👥 Cadastro de Clientes")
-    st.info("Em breve: Módulo de gestão de clientes e fiado.")
+    st.title("Gestão de Clientes")
+    with st.form("cad_cli"):
+        nome_cli = st.text_input("Nome Completo")
+        zap = st.text_input("WhatsApp")
+        if st.form_submit_button("Cadastrar Cliente"):
+            novo_c = pd.DataFrame([{"ID": len(df_clientes)+1, "Nome": nome_cli, "WhatsApp": zap, "Saldo_Devedor": 0}])
+            updated_c = pd.concat([df_clientes, novo_c], ignore_index=True)
+            conn.update(worksheet="clientes", data=updated_c)
+            st.success("Cliente cadastrado!")
+            st.rerun()
+    st.write("### Lista de Clientes")
+    st.table(df_clientes)
 
-elif menu == "💰 PDV / Vendas":
-    st.title("💰 Frente de Caixa")
-    # Aqui você move o código de realizar vendas...
+# --- PÁGINA: VENDAS (PDV) ---
+elif menu == "🛒 Nova Venda":
+    st.title("Frente de Caixa")
+    
+    with st.form("venda"):
+        cliente = st.selectbox("Cliente", df_clientes["Nome"].tolist())
+        produto = st.selectbox("Produto", df_produtos["Nome"].tolist())
+        qtd_venda = st.number_input("Quantidade", min_value=1)
+        
+        if st.form_submit_button("Finalizar Venda"):
+            # Achar o preço e o estoque atual
+            idx_prod = df_produtos.index[df_produtos['Nome'] == produto][0]
+            preco_unit = df_produtos.at[idx_prod, 'Preco']
+            estoque_atual = df_produtos.at[idx_prod, 'Estoque']
+            
+            if estoque_atual >= qtd_venda:
+                # 1. Atualizar Estoque
+                df_produtos.at[idx_prod, 'Estoque'] -= qtd_venda
+                conn.update(worksheet="produtos", data=df_produtos)
+                
+                # 2. Registrar Venda
+                nova_venda = pd.DataFrame([{
+                    "Data": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                    "Cliente": cliente,
+                    "Produto": produto,
+                    "Valor": preco_unit * qtd_venda,
+                    "Quantidade": qtd_venda
+                }])
+                updated_v = pd.concat([df_vendas, nova_venda], ignore_index=True)
+                conn.update(worksheet="vendas", data=updated_v)
+                
+                st.success("Venda realizada com sucesso!")
+                st.balloons()
+            else:
+                st.error("Estoque insuficiente!")
